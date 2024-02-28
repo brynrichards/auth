@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -31,6 +32,14 @@ type Oauth2Handler struct {
 	conf            oauth2.Config
 }
 
+// How to handle errors
+type ErrorHandling string
+
+const (
+	ErrorHandlingJson     ErrorHandling = "json"     // Handle errors by returning a JSON response on the callback endpoint
+	ErrorHandlingRedirect ErrorHandling = "redirect" // Handle errors by redirecting to the url specified in the request
+)
+
 // Params to make initialized and ready to use provider
 type Params struct {
 	logger.L
@@ -41,6 +50,7 @@ type Params struct {
 	Issuer         string
 	AvatarSaver    AvatarSaver
 	UserAttributes UserAttributes
+	ErrorHandling  ErrorHandling
 
 	Port int    // relevant for providers supporting port customization, for example dev oauth2
 	Host string // relevant for providers supporting host customization, for example dev oauth2
@@ -83,6 +93,20 @@ func initOauth2Handler(p Params, service Oauth2Handler) Oauth2Handler {
 // Name returns provider name
 func (p Oauth2Handler) Name() string { return p.name }
 
+// Sends an error
+func (p Oauth2Handler) SendError(w http.ResponseWriter, r *http.Request, l logger.L, code int, err error, msg string) {
+
+	oauthClaims, _, _ := p.JwtService.Get(r)
+
+	// redirect back to url if presented in login query params
+	if p.ErrorHandling == ErrorHandlingRedirect && oauthClaims.Handshake != nil && oauthClaims.Handshake.From != "" {
+		http.Redirect(w, r, oauthClaims.Handshake.From+"?error="+url.QueryEscape(msg), http.StatusTemporaryRedirect)
+		return
+	}
+
+	rest.SendErrorJSON(w, r, l, code, err, msg)
+}
+
 // LoginHandler - GET /login?from=redirect-back-url&[site|aud]=siteID&session=1&noava=1
 func (p Oauth2Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
@@ -90,13 +114,13 @@ func (p Oauth2Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	// make state (random) and store in session
 	state, err := randToken()
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to make oauth2 state")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to make oauth2 state")
 		return
 	}
 
 	cid, err := randToken()
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to make claim's id")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to make claim's id")
 		return
 	}
 
@@ -121,7 +145,7 @@ func (p Oauth2Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := p.JwtService.Set(w, claims); err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to set token")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to set token")
 		return
 	}
 
@@ -141,34 +165,44 @@ func (p Oauth2Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 func (p Oauth2Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 	oauthClaims, _, err := p.JwtService.Get(r)
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to get token")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to get token")
 		return
 	}
 
 	if oauthClaims.Handshake == nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusForbidden, nil, "invalid handshake token")
+		p.SendError(w, r, p.L, http.StatusForbidden, nil, "invalid handshake token")
 		return
 	}
 
 	retrievedState := oauthClaims.Handshake.State
 	if retrievedState == "" || retrievedState != r.URL.Query().Get("state") {
-		rest.SendErrorJSON(w, r, p.L, http.StatusForbidden, nil, "unexpected state")
+		p.SendError(w, r, p.L, http.StatusForbidden, nil, "unexpected state")
 		return
 	}
 
 	p.conf.RedirectURL = p.makeRedirURL(r.URL.Path)
 
 	p.Logf("[DEBUG] token with state %s", retrievedState)
+
+	error := r.URL.Query().Get("error")
+	error_description := r.URL.Query().Get("error_description")
+
+	if error != "" {
+		p.Logf("[WARN] received error from OAuth provider: %s %d", error, error_description)
+		p.SendError(w, r, p.L, http.StatusInternalServerError, nil, error_description)
+		return
+	}
+
 	tok, err := p.conf.Exchange(context.Background(), r.URL.Query().Get("code"))
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "exchange failed")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "exchange failed")
 		return
 	}
 
 	client := p.conf.Client(context.Background(), tok)
 	uinfo, err := client.Get(p.infoURL)
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusServiceUnavailable, err, "failed to get client info")
+		p.SendError(w, r, p.L, http.StatusServiceUnavailable, err, "failed to get client info")
 		return
 	}
 
@@ -180,13 +214,13 @@ func (p Oauth2Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 
 	data, err := io.ReadAll(uinfo.Body)
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to read user info")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to read user info")
 		return
 	}
 
 	jData := map[string]interface{}{}
 	if e := json.Unmarshal(data, &jData); e != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to unmarshal user info")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to unmarshal user info")
 		return
 	}
 	p.Logf("[DEBUG] got raw user info %+v", jData)
@@ -197,13 +231,13 @@ func (p Oauth2Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err = setAvatar(p.AvatarSaver, u, client)
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to save avatar to proxy")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to save avatar to proxy")
 		return
 	}
 
 	cid, err := randToken()
 	if err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to make claim's id")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to make claim's id")
 		return
 	}
 	claims := token.Claims{
@@ -218,7 +252,7 @@ func (p Oauth2Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err = p.JwtService.Set(w, claims); err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusInternalServerError, err, "failed to set token")
+		p.SendError(w, r, p.L, http.StatusInternalServerError, err, "failed to set token")
 		return
 	}
 
@@ -240,10 +274,11 @@ func (p Oauth2Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 // LogoutHandler - GET /logout
 func (p Oauth2Handler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := p.JwtService.Get(r); err != nil {
-		rest.SendErrorJSON(w, r, p.L, http.StatusForbidden, err, "logout not allowed")
+		p.SendError(w, r, p.L, http.StatusForbidden, err, "logout not allowed")
 		return
 	}
 	p.JwtService.Reset(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (p Oauth2Handler) makeRedirURL(path string) string {

@@ -32,6 +32,7 @@ type Service struct {
 	avatarProxy    *avatar.Proxy
 	issuer         string
 	useGravatar    bool
+	errorHandling  provider.ErrorHandling
 }
 
 // Opts is a full set of all parameters to initialize Service
@@ -71,6 +72,7 @@ type Opts struct {
 	AudSecrets       bool                     // allow multiple secrets (secret per aud)
 	Logger           logger.L                 // logger interface, default is no logging at all
 	RefreshCache     middleware.RefreshCache  // optional cache to keep refreshed tokens
+	ErrorHandling    provider.ErrorHandling
 }
 
 // NewService initializes everything
@@ -85,8 +87,9 @@ func NewService(opts Opts) (res *Service) {
 			BasicAuthChecker: opts.BasicAuthChecker,
 			RefreshCache:     opts.RefreshCache,
 		},
-		issuer:      opts.Issuer,
-		useGravatar: opts.UseGravatar,
+		issuer:        opts.Issuer,
+		useGravatar:   opts.UseGravatar,
+		errorHandling: opts.ErrorHandling,
 	}
 
 	if opts.Issuer == "" {
@@ -233,6 +236,7 @@ func (s *Service) AddProviderWithUserAttributes(name, cid, csecret string, userA
 		Csecret:        csecret,
 		L:              s.logger,
 		UserAttributes: userAttributes,
+		ErrorHandling:  s.errorHandling,
 	}
 	s.addProvider(name, p)
 }
@@ -276,6 +280,7 @@ func (s *Service) AddProvider(name, cid, csecret string) {
 		Csecret:        csecret,
 		L:              s.logger,
 		UserAttributes: map[string]string{},
+		ErrorHandling:  s.errorHandling,
 	}
 
 	s.addProvider(name, p)
@@ -284,13 +289,14 @@ func (s *Service) AddProvider(name, cid, csecret string) {
 // AddDevProvider with a custom host and port
 func (s *Service) AddDevProvider(host string, port int) {
 	p := provider.Params{
-		URL:         s.opts.URL,
-		JwtService:  s.jwtService,
-		Issuer:      s.issuer,
-		AvatarSaver: s.avatarProxy,
-		L:           s.logger,
-		Port:        port,
-		Host:        host,
+		URL:           s.opts.URL,
+		JwtService:    s.jwtService,
+		Issuer:        s.issuer,
+		AvatarSaver:   s.avatarProxy,
+		L:             s.logger,
+		Port:          port,
+		Host:          host,
+		ErrorHandling: s.errorHandling,
 	}
 	s.providers = append(s.providers, provider.NewService(provider.NewDev(p)))
 }
@@ -298,11 +304,12 @@ func (s *Service) AddDevProvider(host string, port int) {
 // AddAppleProvider allow SignIn with Apple ID
 func (s *Service) AddAppleProvider(appleConfig provider.AppleConfig, privKeyLoader provider.PrivateKeyLoaderInterface) error {
 	p := provider.Params{
-		URL:         s.opts.URL,
-		JwtService:  s.jwtService,
-		Issuer:      s.issuer,
-		AvatarSaver: s.avatarProxy,
-		L:           s.logger,
+		URL:           s.opts.URL,
+		JwtService:    s.jwtService,
+		Issuer:        s.issuer,
+		AvatarSaver:   s.avatarProxy,
+		L:             s.logger,
+		ErrorHandling: s.errorHandling,
 	}
 
 	// Error checking at create need for catch one when apple private key init
@@ -318,13 +325,14 @@ func (s *Service) AddAppleProvider(appleConfig provider.AppleConfig, privKeyLoad
 // AddCustomProvider adds custom provider (e.g. https://gopkg.in/oauth2.v3)
 func (s *Service) AddCustomProvider(name string, client Client, copts provider.CustomHandlerOpt) {
 	p := provider.Params{
-		URL:         s.opts.URL,
-		JwtService:  s.jwtService,
-		Issuer:      s.issuer,
-		AvatarSaver: s.avatarProxy,
-		Cid:         client.Cid,
-		Csecret:     client.Csecret,
-		L:           s.logger,
+		URL:           s.opts.URL,
+		JwtService:    s.jwtService,
+		Issuer:        s.issuer,
+		AvatarSaver:   s.avatarProxy,
+		Cid:           client.Cid,
+		Csecret:       client.Csecret,
+		L:             s.logger,
+		ErrorHandling: s.errorHandling,
 	}
 
 	s.providers = append(s.providers, provider.NewService(provider.NewCustom(name, p, copts)))
