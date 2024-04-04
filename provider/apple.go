@@ -170,7 +170,7 @@ func NewApple(p Params, appleCfg AppleConfig, privateKeyLoader PrivateKeyLoaderI
 			ClientID:     appleCfg.ClientID,
 			TeamID:       appleCfg.TeamID,
 			KeyID:        appleCfg.KeyID,
-			scopes:       []string{"name"},
+			scopes:       []string{"email", "name"},
 			jwkURL:       appleKeysURL,
 			ResponseMode: responseMode,
 		},
@@ -184,6 +184,12 @@ func NewApple(p Params, appleCfg AppleConfig, privateKeyLoader PrivateKeyLoaderI
 			var usr token.User
 			if uid, ok := claims["sub"]; ok {
 				usr.ID = "apple_" + token.HashID(sha1.New(), uid.(string))
+			}
+			if name, ok := claims["name"]; ok {
+				usr.Name = name.(string)
+			}
+			if email, ok := claims["email"]; ok {
+				usr.Email = email.(string)
 			}
 			return usr
 		},
@@ -496,14 +502,30 @@ func (ah *AppleHandler) parseUserData(user *token.User, jUser string) {
 
 	var userData UserData
 
-	// Catch error for log only. No need break flow if user name doesn't exist
+	// Catch error for log only. No need break flow if user name doesn't exist, we may only have email
 	if err := json.Unmarshal([]byte(jUser), &userData); err != nil {
 		ah.L.Logf("[DEBUG] failed to parse user data %s: %v", user, err)
-		user.Name = "noname_" + user.ID[6:12] // paste noname if user name failed to parse
+
+		type EmailOnlyUserData struct {
+			Email string `json:"email"`
+		}
+
+		var emailOnlyUserData EmailOnlyUserData
+
+		if err := json.Unmarshal([]byte(jUser), &emailOnlyUserData); err != nil {
+			ah.L.Logf("[DEBUG] failed to parse user data %s: %v", user, err)
+			user.Name = "noname_" + user.ID[6:12] // paste noname if email failed to parse
+			return
+		}
+
+		user.Name = strings.Split(emailOnlyUserData.Email, "@")[0] // use the part before the @ sign if we have no name to work with
+		user.Email = emailOnlyUserData.Email
+
 		return
 	}
 
 	user.Name = fmt.Sprintf("%s %s", userData.Name.FirstName, userData.Name.LastName)
+	user.Email = userData.Email
 }
 
 func (ah *AppleHandler) prepareLoginURL(state, path string) (string, error) {
