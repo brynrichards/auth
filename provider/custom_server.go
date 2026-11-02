@@ -25,6 +25,7 @@ type CustomHandlerOpt struct {
 	Endpoint          oauth2.Endpoint
 	InfoURL           string
 	MapUserFn         func(UserData, []byte) token.User
+	MapUserWithTokFn  MapUserWithTokenFn // optional, takes precedence over MapUserFn
 	BearerTokenHookFn BearerTokenHook
 	Scopes            []string
 }
@@ -214,6 +215,7 @@ func NewCustom(name string, p Params, copts CustomHandlerOpt) Oauth2Handler {
 		scopes:          copts.Scopes,
 		infoURL:         copts.InfoURL,
 		mapUser:         copts.MapUserFn,
+		mapUserWithTok:  copts.MapUserWithTokFn,
 		bearerTokenHook: copts.BearerTokenHookFn,
 	})
 }

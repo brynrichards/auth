@@ -28,6 +28,7 @@ type Oauth2Handler struct {
 	endpoint        oauth2.Endpoint
 	scopes          []string
 	mapUser         func(UserData, []byte) token.User // map info from InfoURL to User
+	mapUserWithTok  MapUserWithTokenFn                // map info from InfoURL to User, with access to the oauth2 token
 	bearerTokenHook BearerTokenHook                   // a way to get a Bearer token received from oauth2-provider
 	conf            oauth2.Config
 }
@@ -67,6 +68,10 @@ func (u UserData) Value(key string) string {
 	}
 	return ""
 }
+
+// MapUserWithTokenFn maps info from InfoURL to User, with access to the oauth2 token received during
+// authentication (e.g. to read claims from tok.Extra("id_token"))
+type MapUserWithTokenFn func(data UserData, bdata []byte, tok *oauth2.Token) token.User
 
 // BearerTokenHook accepts provider name, user and token, received during oauth2 authentication
 type BearerTokenHook func(provider string, user token.User, token oauth2.Token)
@@ -225,7 +230,12 @@ func (p Oauth2Handler) AuthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Logf("[DEBUG] got raw user info %+v", jData)
 
-	u := p.mapUser(jData, data)
+	var u token.User
+	if p.mapUserWithTok != nil {
+		u = p.mapUserWithTok(jData, data, tok)
+	} else {
+		u = p.mapUser(jData, data)
+	}
 	if oauthClaims.NoAva {
 		u.Picture = "" // reset picture on no avatar request
 	}
